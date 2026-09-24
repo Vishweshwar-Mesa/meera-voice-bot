@@ -1,0 +1,13 @@
+{
+  "name": "meera-voice-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram bot that turns Meera's raw notes into draft posts using Gemini, in her own voice.",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0"
+  }
+}

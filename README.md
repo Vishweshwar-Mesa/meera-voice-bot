@@ -9,9 +9,13 @@ back to her in the same chat.
 ```
 Meera (Telegram) --> Telegram webhook --> api/telegram.js (Vercel function)
                                               |
-                                              v
-                                      lib/gemini.js -> Gemini API
-                                    (system prompt = prompts/voice-instructions.md)
+                    1. junk filter (lib/guardrails.js) -- reject obvious spam, no API call
+                                              |
+                    2. score 0-10 (lib/scoring.js, Gemini Flash) -- reject if < 6, explain why, stop
+                                              |
+                    3. keywords + news (lib/keywords.js, lib/googleNews.js) -- optional, best-effort
+                                              |
+                    4. draft (lib/gemini.js) -- voice profile + note (+ news if genuinely relevant)
                                               |
                                               v
                                       lib/telegram.js -> sendMessage back to Meera
@@ -20,16 +24,40 @@ Meera (Telegram) --> Telegram webhook --> api/telegram.js (Vercel function)
 There's no polling loop — Telegram calls a webhook URL on Vercel every time
 she sends a message, which is why this is a good fit for serverless hosting.
 
+Every step after the junk filter can produce a real outcome on its own:
+- **Score below 6/10** → she gets a one-line reason and nothing else. No
+  draft is generated for logistics reminders, abandoned half-thoughts, etc.
+- **Score 6+** → drafting proceeds. If a genuinely relevant news item turns
+  up, the draft may use it — and if it does, a verify block with the
+  headline, source, date, and link is appended, since a fact published in
+  her name that she hasn't personally checked is exactly what this pipeline
+  exists to prevent.
+- Meera is always the last check before anything reaches LinkedIn — the bot
+  never posts on her behalf, it only drafts.
+
 ## Files
 
-- `api/telegram.js` — the webhook endpoint Telegram calls on every message.
-- `lib/gemini.js` — builds the prompt and calls Gemini.
+- `api/telegram.js` — the webhook endpoint Telegram calls on every message;
+  orchestrates the pipeline above.
+- `lib/guardrails.js` — cheap pre-checks (too short, spam, length cap) and
+  the optional `ALLOWED_CHAT_ID` access lock.
+- `lib/scoring.js` — scores a note 0-10 on whether it's worth drafting, with
+  a one-line reason. Threshold is 6 (`SCORE_THRESHOLD` in that file).
+- `lib/keywords.js` — pulls a short search phrase out of a note that passed
+  scoring, or `null` if there's no real-world topic to search for.
+- `lib/googleNews.js` — fetches the top Google News result for that phrase
+  (RSS, no API key needed) and formats the "check this before publishing"
+  verify block.
+- `lib/geminiClient.js` — shared Gemini client + the fast/cheap "Flash" model
+  used for scoring and keyword extraction.
+- `lib/gemini.js` — builds the drafting prompt (voice profile + note +
+  optional news item) and calls Gemini; the model self-reports via a
+  trailing `USED_NEWS:` marker whether it actually used the news item.
 - `lib/telegram.js` — sends messages back to the chat (handles Telegram's
   4096-character message limit by splitting long drafts).
 - `lib/voice.js` — loads `prompts/voice-instructions.md` and caches it.
 - `prompts/voice-instructions.md` — **put Meera's voice/style instructions
-  here.** This file's contents get added to every Gemini request. It's just
-  a placeholder right now — fill it in before going live.
+  here.** This file's contents get added to every Gemini drafting request.
 
 ## 1. Create the Telegram bot
 

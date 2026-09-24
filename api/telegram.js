@@ -1,5 +1,9 @@
 import { generateDraft } from "../lib/gemini.js";
 import { sendMessage, sendChatAction } from "../lib/telegram.js";
+import { checkNote, isAllowedChat } from "../lib/guardrails.js";
+import { scoreNote } from "../lib/scoring.js";
+import { extractSearchPhrase } from "../lib/keywords.js";
+import { fetchTopNews, formatVerifyBlock } from "../lib/googleNews.js";
 
 const WELCOME_TEXT =
   "Hi! Send me a note and I'll turn it into a ready-to-post draft in your voice.";
@@ -33,15 +37,27 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Once ALLOWED_CHAT_ID is set, silently ignore everyone else — no reply,
+  // so the bot doesn't confirm its existence or behavior to a random prober.
+  if (!isAllowedChat(chatId)) {
+    console.warn(`Ignored message from unauthorized chat ${chatId}`);
+    res.status(200).end();
+    return;
+  }
+
   try {
     if (!text) {
       await sendMessage(chatId, "Send me a text note and I'll draft a post from it.");
     } else if (text === "/start" || text === "/help") {
       await sendMessage(chatId, WELCOME_TEXT);
     } else {
-      await sendChatAction(chatId, "typing");
-      const draft = await generateDraft(text);
-      await sendMessage(chatId, draft);
+      const junkRejection = checkNote(text);
+      if (junkRejection) {
+        await sendMessage(chatId, junkRejection);
+      } else {
+        await sendChatAction(chatId, "typing");
+        await handleNote(chatId, text);
+      }
     }
   } catch (err) {
     console.error("Failed to handle Telegram update:", err);
@@ -53,4 +69,35 @@ export default async function handler(req, res) {
   }
 
   res.status(200).end();
+}
+
+async function handleNote(chatId, note) {
+  // Step 1: score — does this deserve a draft at all?
+  const { score, reason, passed } = await scoreNote(note);
+  console.log(`Scored note from chat ${chatId}: ${score}/10 — ${reason}`);
+
+  if (!passed) {
+    await sendMessage(
+      chatId,
+      `Didn't draft this one (${score}/10). ${reason}`
+    );
+    return;
+  }
+
+  // Step 2: find a relevant news angle, if there is one.
+  let newsItem = null;
+  try {
+    const searchPhrase = await extractSearchPhrase(note);
+    newsItem = await fetchTopNews(searchPhrase);
+  } catch (err) {
+    console.error("News lookup failed, drafting without it:", err);
+  }
+
+  // Step 3: draft, optionally woven around the news item.
+  const { text: draft, usedNews } = await generateDraft(note, newsItem);
+
+  const finalMessage =
+    usedNews && newsItem ? `${draft}\n\n${formatVerifyBlock(newsItem)}` : draft;
+
+  await sendMessage(chatId, finalMessage);
 }

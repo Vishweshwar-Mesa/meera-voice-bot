@@ -4,6 +4,8 @@ import { checkNote, isAllowedChat } from "../lib/guardrails.js";
 import { scoreNote } from "../lib/scoring.js";
 import { extractSearchPhrase } from "../lib/keywords.js";
 import { fetchTopNews, formatVerifyBlock } from "../lib/googleNews.js";
+import { getVoiceInstructions } from "../lib/voice.js";
+import { getAudienceProfile } from "../lib/audience.js";
 
 const WELCOME_TEXT =
   "Hi! Send me a note and I'll turn it into a ready-to-post draft in your voice.";
@@ -72,28 +74,30 @@ export default async function handler(req, res) {
 }
 
 async function handleNote(chatId, note) {
-  // Step 1: score — does this deserve a draft at all?
-  const { score, reason, passed } = await scoreNote(note);
-  console.log(`Scored note from chat ${chatId}: ${score}/10 — ${reason}`);
-
-  if (!passed) {
-    await sendMessage(
-      chatId,
-      `Didn't draft this one (${score}/10). ${reason}`
-    );
-    return;
-  }
-
-  // Step 2: find a relevant news angle, if there is one.
+  // Step 1: find a relevant news angle up front — scoring needs it too, to
+  // judge timeliness, not just the draft.
   let newsItem = null;
   try {
     const searchPhrase = await extractSearchPhrase(note);
     newsItem = await fetchTopNews(searchPhrase);
   } catch (err) {
-    console.error("News lookup failed, drafting without it:", err);
+    console.error("News lookup failed, continuing without it:", err);
   }
 
-  // Step 3: draft, optionally woven around the news item.
+  // Step 2: score — substance, timeliness, thematic fit, audience fit.
+  const { score, reason, passed } = await scoreNote(note, {
+    newsItem,
+    voiceInstructions: getVoiceInstructions(),
+    audienceProfile: getAudienceProfile(),
+  });
+  console.log(`Scored note from chat ${chatId}: ${score}/10 — ${reason}`);
+
+  if (!passed) {
+    await sendMessage(chatId, `Didn't draft this one (${score}/10). ${reason}`);
+    return;
+  }
+
+  // Step 3: draft, optionally woven around the same news item.
   const { text: draft, usedNews } = await generateDraft(note, newsItem);
 
   const finalMessage =
